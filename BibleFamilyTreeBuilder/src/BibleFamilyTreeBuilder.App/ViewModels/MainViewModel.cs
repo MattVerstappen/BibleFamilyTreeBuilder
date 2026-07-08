@@ -46,7 +46,7 @@ public class MainViewModel : INotifyPropertyChanged
         NewSampleTreeCommand = new RelayCommand(_ => NewSampleTree());
         AddPersonCommand = new RelayCommand(_ => AddPerson());
         DeletePersonCommand = new RelayCommand(_ => ConfirmAndDeleteSelectedPerson(Application.Current.MainWindow), _ => SelectedPerson is not null);
-        AddChildCommand = new RelayCommand(_ => AddQuickPerson("New child", CardType.Default, RelationshipType.ParentChild, selectedPersonIsFrom: true, ParentKind.Biological), _ => SelectedPerson is not null);
+        AddChildCommand = new RelayCommand(_ => AddQuickPerson("New child", CardType.Default, RelationshipType.ParentChild, selectedPersonIsFrom: true, ParentKind.Biological, promptForOtherParent: true), _ => SelectedPerson is not null);
         AddParentCommand = new RelayCommand(_ => AddQuickPerson("New parent", CardType.Default, RelationshipType.ParentChild, selectedPersonIsFrom: false, ParentKind.Biological), _ => SelectedPerson is not null);
         AddSpouseCommand = new RelayCommand(_ => AddQuickPerson("New spouse", CardType.Default, RelationshipType.Marriage, selectedPersonIsFrom: true, ParentKind.Unknown), _ => SelectedPerson is not null);
         AddUnknownDescendantCommand = new RelayCommand(_ => AddQuickPerson("Unknown descendants", CardType.UnknownDescendant, RelationshipType.ParentChild, selectedPersonIsFrom: true, ParentKind.Unknown), _ => SelectedPerson is not null);
@@ -85,6 +85,7 @@ public class MainViewModel : INotifyPropertyChanged
         SaveRelationshipChangesCommand = new RelayCommand(_ => SaveSelectedRelationshipChanges(), _ => SelectedRelationshipItem is not null);
         DeleteRelationshipCommand = new RelayCommand(_ => ConfirmAndDeleteSelectedRelationship(Application.Current.MainWindow), _ => SelectedRelationshipItem is not null);
         ClearGenerationLabelCommand = new RelayCommand(_ => ClearSelectedGenerationLabel(), _ => GetSelectedEffectiveGeneration().HasValue);
+        SetGenerationToLatestCommand = new RelayCommand(_ => SetGenerationToLatest(), _ => SelectedPerson is not null);
         AddNameVariantCommand = new RelayCommand(_ => AddNameVariant(), _ => SelectedPerson is not null);
         SaveNameVariantCommand = new RelayCommand(_ => SaveSelectedNameVariant(), _ => SelectedNameVariantItem is not null);
         DeleteNameVariantCommand = new RelayCommand(_ => ConfirmAndDeleteSelectedNameVariant(), _ => SelectedNameVariantItem is not null);
@@ -619,6 +620,7 @@ public class MainViewModel : INotifyPropertyChanged
     public ICommand SaveRelationshipChangesCommand { get; }
     public ICommand DeleteRelationshipCommand { get; }
     public ICommand ClearGenerationLabelCommand { get; }
+    public ICommand SetGenerationToLatestCommand { get; }
     public ICommand AddNameVariantCommand { get; }
     public ICommand SaveNameVariantCommand { get; }
     public ICommand DeleteNameVariantCommand { get; }
@@ -796,7 +798,8 @@ public class MainViewModel : INotifyPropertyChanged
         RelationshipType relationshipType,
         bool selectedPersonIsFrom,
         ParentKind parentKind,
-        string label = "")
+        string label = "",
+        bool promptForOtherParent = false)
     {
         if (SelectedPerson is null)
         {
@@ -822,9 +825,78 @@ public class MainViewModel : INotifyPropertyChanged
                 $"{newPerson.EffectiveDisplayName} was added, but the relationship could not be created. You can connect it manually.",
                 "Quick add");
         }
+        else if (promptForOtherParent && relationshipType == RelationshipType.ParentChild && selectedPersonIsFrom)
+        {
+            OfferSecondParent(originalSelectedPerson, newPerson);
+        }
 
         SelectedPerson = newPerson;
         RelationshipTargetPerson = originalSelectedPerson;
+    }
+
+    private void OfferSecondParent(Person firstParent, Person child)
+    {
+        var spouses = Project.Relationships
+            .Where(relationship => relationship.Type == RelationshipType.Marriage &&
+                                   (relationship.FromPersonId == firstParent.Id || relationship.ToPersonId == firstParent.Id))
+            .Select(relationship => relationship.FromPersonId == firstParent.Id ? relationship.ToPersonId : relationship.FromPersonId)
+            .Distinct()
+            .Select(spouseId => Project.People.FirstOrDefault(person => person.Id == spouseId))
+            .OfType<Person>()
+            .Where(spouse => spouse.Id != child.Id)
+            .ToList();
+
+        if (spouses.Count == 0)
+        {
+            return;
+        }
+
+        Person? otherParent;
+        if (spouses.Count == 1)
+        {
+            var result = MessageBox.Show(
+                Application.Current.MainWindow,
+                $"Also add {spouses[0].EffectiveDisplayName} as the other parent of {child.EffectiveDisplayName}?",
+                "Second parent",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Question);
+
+            otherParent = result == MessageBoxResult.Yes ? spouses[0] : null;
+        }
+        else
+        {
+            otherParent = SelectPersonDialog.Show(
+                Application.Current.MainWindow,
+                "Choose second parent",
+                $"{firstParent.EffectiveDisplayName} has more than one spouse. Who is the other parent of {child.EffectiveDisplayName}?",
+                spouses);
+        }
+
+        if (otherParent is null)
+        {
+            return;
+        }
+
+        Project.Relationships.Add(new Relationship
+        {
+            Type = RelationshipType.ParentChild,
+            FromPersonId = otherParent.Id,
+            ToPersonId = child.Id,
+            ParentKind = ParentKind.Biological,
+            Label = ParentKind.Biological.ToString()
+        });
+    }
+
+    private void SetGenerationToLatest()
+    {
+        if (SelectedPerson is null)
+        {
+            return;
+        }
+
+        var layout = _treeLayoutService.Layout(Project);
+        var latestGeneration = layout.PersonGenerations.Values.DefaultIfEmpty(0).Max();
+        SelectedGenerationOverrideText = latestGeneration.ToString();
     }
 
     public void ConfirmAndDeleteSelectedPerson(Window? owner)
@@ -1479,7 +1551,7 @@ public class MainViewModel : INotifyPropertyChanged
 
         try
         {
-            _projectJsonService.SaveAsync(Project, GetBackupFilePath()).GetAwaiter().GetResult();
+            _projectJsonService.Save(Project, GetBackupFilePath());
             return true;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)

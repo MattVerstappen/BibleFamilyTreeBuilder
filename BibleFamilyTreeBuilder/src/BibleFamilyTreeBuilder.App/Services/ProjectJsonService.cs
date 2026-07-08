@@ -20,6 +20,14 @@ public class ProjectJsonService
         await JsonSerializer.SerializeAsync(stream, project, _options);
     }
 
+    // Synchronous save for callers already on the UI thread (e.g. automatic backups
+    // before destructive actions). Blocking on SaveAsync there deadlocks the app.
+    public void Save(TreeProject project, string filePath)
+    {
+        using var stream = File.Create(filePath);
+        JsonSerializer.Serialize(stream, project, _options);
+    }
+
     public async Task<TreeProject> LoadAsync(string filePath)
     {
         await using var stream = File.OpenRead(filePath);

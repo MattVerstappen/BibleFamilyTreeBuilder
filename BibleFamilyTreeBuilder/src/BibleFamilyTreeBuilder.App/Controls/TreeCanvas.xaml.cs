@@ -51,6 +51,13 @@ public partial class TreeCanvas : UserControl
     private const double ExportLegendHeight = 154;
     private Point _lastPanPoint;
     private bool _isPanning;
+    private const double DragThreshold = 4;
+    private Person? _dragPerson;
+    private Border? _dragBorder;
+    private Point _dragStartPoint;
+    private double _dragOriginalLeft;
+    private double _dragOriginalTop;
+    private bool _isDraggingCard;
 
     public TreeCanvas()
     {
@@ -717,10 +724,80 @@ public partial class TreeCanvas : UserControl
 
     private void PersonCard_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
-        if (sender is Border { Tag: Person person })
+        if (sender is not Border { Tag: Person person })
         {
-            SelectedPerson = person;
-            e.Handled = true;
+            return;
+        }
+
+        // Selecting the person triggers a Refresh that rebuilds every card, so the
+        // border that raised this event is no longer on the canvas. Find the fresh
+        // border for this person before starting the drag.
+        SelectedPerson = person;
+        _dragBorder = PART_Canvas.Children.OfType<Border>().FirstOrDefault(border => ReferenceEquals(border.Tag, person));
+
+        if (_dragBorder is not null)
+        {
+            _dragPerson = person;
+            _dragStartPoint = e.GetPosition(PART_Canvas);
+            _dragOriginalLeft = Canvas.GetLeft(_dragBorder);
+            _dragOriginalTop = Canvas.GetTop(_dragBorder);
+            _isDraggingCard = false;
+            PART_Canvas.CaptureMouse();
+        }
+
+        e.Handled = true;
+    }
+
+    private void CompleteCardDrag(Person person, double dropLeft, double dropTop)
+    {
+        if (Project is null)
+        {
+            return;
+        }
+
+        var layout = _layoutService.Layout(Project);
+        if (layout.GenerationLanes.Count == 0 || !layout.PersonGenerations.TryGetValue(person.Id, out var currentGeneration))
+        {
+            return;
+        }
+
+        // Work out which generation lane the card was dropped on. Dropping above the
+        // first lane or below the last one moves the person to a brand new generation.
+        var dropCenterY = dropTop + TreeLayoutService.CardHeight / 2;
+        var firstLane = layout.GenerationLanes[0];
+        var lastLane = layout.GenerationLanes[^1];
+
+        int targetGeneration;
+        if (dropCenterY < firstLane.Top)
+        {
+            targetGeneration = firstLane.Generation - 1;
+        }
+        else if (dropCenterY > lastLane.Top + lastLane.Height)
+        {
+            targetGeneration = lastLane.Generation + 1;
+        }
+        else
+        {
+            targetGeneration = layout.GenerationLanes
+                .OrderBy(lane => Math.Abs(dropCenterY - (lane.Top + lane.Height / 2)))
+                .First()
+                .Generation;
+        }
+
+        if (targetGeneration != currentGeneration)
+        {
+            person.GenerationOverride = targetGeneration;
+        }
+
+        // Re-run the layout without manual offsets to find the card's natural slot,
+        // then keep only the horizontal difference so the card stays where it was
+        // dropped but snaps vertically onto its generation row.
+        person.ManualXOffset = 0;
+        person.ManualYOffset = 0;
+        var baseLayout = _layoutService.Layout(Project);
+        if (baseLayout.PersonBounds.TryGetValue(person.Id, out var baseBounds))
+        {
+            person.ManualXOffset = dropLeft - baseBounds.X;
         }
     }
 
@@ -741,6 +818,25 @@ public partial class TreeCanvas : UserControl
 
     private void Canvas_MouseMove(object sender, MouseEventArgs e)
     {
+        if (_dragPerson is not null && _dragBorder is not null && e.LeftButton == MouseButtonState.Pressed)
+        {
+            var canvasPoint = e.GetPosition(PART_Canvas);
+            var dragDelta = canvasPoint - _dragStartPoint;
+
+            if (!_isDraggingCard && (Math.Abs(dragDelta.X) > DragThreshold || Math.Abs(dragDelta.Y) > DragThreshold))
+            {
+                _isDraggingCard = true;
+            }
+
+            if (_isDraggingCard)
+            {
+                Canvas.SetLeft(_dragBorder, _dragOriginalLeft + dragDelta.X);
+                Canvas.SetTop(_dragBorder, _dragOriginalTop + dragDelta.Y);
+            }
+
+            return;
+        }
+
         if (!_isPanning)
         {
             return;
@@ -755,6 +851,24 @@ public partial class TreeCanvas : UserControl
 
     private void Canvas_MouseUp(object sender, MouseButtonEventArgs e)
     {
+        if (_dragPerson is not null)
+        {
+            var person = _dragPerson;
+            var border = _dragBorder;
+            var wasDragging = _isDraggingCard;
+            _dragPerson = null;
+            _dragBorder = null;
+            _isDraggingCard = false;
+            PART_Canvas.ReleaseMouseCapture();
+
+            if (wasDragging && border is not null)
+            {
+                CompleteCardDrag(person, Canvas.GetLeft(border), Canvas.GetTop(border));
+            }
+
+            return;
+        }
+
         _isPanning = false;
         PART_Canvas.ReleaseMouseCapture();
     }

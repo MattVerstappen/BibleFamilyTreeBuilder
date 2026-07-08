@@ -176,7 +176,18 @@
                                           Margin="0,0,0,8" />
 
                                 <TextBlock Text="Generation override" Style="{StaticResource FieldLabel}" />
-                                <TextBox Text="{Binding SelectedGenerationOverrideText, UpdateSourceTrigger=PropertyChanged}" Margin="0,0,0,8" />
+                                <Grid Margin="0,0,0,8">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBox Text="{Binding SelectedGenerationOverrideText, UpdateSourceTrigger=PropertyChanged}" />
+                                    <Button Grid.Column="1"
+                                            Content="Latest"
+                                            Command="{Binding SetGenerationToLatestCommand}"
+                                            ToolTip="Set this person's generation to the latest (bottom) generation in the tree"
+                                            Margin="6,0,0,0" />
+                                </Grid>
 
                                 <TextBlock Text="Notes" Style="{StaticResource FieldLabel}" />
                                 <TextBox Text="{Binding SelectedPerson.Notes, UpdateSourceTrigger=PropertyChanged}"
